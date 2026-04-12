@@ -176,6 +176,14 @@ Options:
   -t <threshold>        Minimum risk score to report (default: 20)
   -h                    Show help
   --version             Show version
+
+Advanced Options:
+  --webhook <url>       Send alerts to a webhook URL (via HTTP POST)
+  --slack <url>         Send alerts to Slack webhook (formatted)
+  --web <port>          Start web dashboard on given port
+  --alerts <file>       JSON alerts file for web dashboard
+  --learn <output>      Learn baseline from FILE, save to <output>
+  --baseline <file>     Load baseline for anomaly scoring
 ```
 
 ### Usage Examples
@@ -230,11 +238,14 @@ scd/
 ├── 🔧 src/                      # Core C source modules
 │   ├── main.c                   # Entry point & CLI parsing
 │   ├── parser.c / .h            # Shell command tokenizer
-│   ├── rule_engine.c / .h       # Rule loader & pattern matcher
+│   ├── rule_engine.c / .h       # Rule loader & regex/substring matcher
 │   ├── scorer.c / .h            # Risk score aggregator
 │   ├── alert.c / .h             # Output formatters (text/JSON/syslog)
 │   ├── input_reader.c / .h      # File / stdin / inotify reader
-│   └── daemon.c / .h            # Background daemon with signals
+│   ├── daemon.c / .h            # Background daemon with signals
+│   ├── webhook.c / .h           # Advanced: HTTP POST & Slack webhooks
+│   ├── baseline.c / .h          # Advanced: User behavior anomaly detection
+│   └── web_server.c / .h        # Advanced: Mini HTTP server for dashboard
 │
 ├── 📦 include/
 │   └── scd.h                    # Shared types, enums, constants
@@ -253,6 +264,18 @@ scd/
 ├── 🐳 docker/
 │   ├── Dockerfile               # Multi-stage build
 │   └── docker-compose.yml       # Scan + daemon services
+│
+├── 🌐 web/
+│   └── dashboard.html           # Dark-themed UI for web server
+│
+├── 📦 packaging/
+│   ├── rpm/                     # RPM spec file
+│   ├── deb/                     # Debian control file
+│   └── systemd/                 # Systemd service unit
+│
+├── ⚡ ebpf/
+│   ├── scd_execve.bt            # bpftrace kernel hook
+│   └── README.md                # eBPF integration docs
 │
 ├── 🎮 run.sh                    # Interactive TUI launcher
 ├── Makefile                     # Build system
@@ -313,12 +336,12 @@ make clean && make all
 | Whitelist support | ✅ Shipped |
 | Interactive TUI | ✅ Shipped |
 | Docker support | ✅ Shipped |
-| Full POSIX regex rules | 🔜 Planned |
-| eBPF kernel hooks | 🔜 Planned |
-| Web dashboard | 🔜 Planned |
-| Slack/webhook alerts | 🔜 Planned |
-| User behavior baseline | 🔜 Planned |
-| rpm/deb packaging | 🔜 Planned |
+| Full POSIX regex rules | ✅ Shipped |
+| eBPF kernel hooks | ✅ Shipped |
+| Web dashboard | ✅ Shipped |
+| Slack/webhook alerts | ✅ Shipped |
+| User behavior baseline | ✅ Shipped |
+| rpm/deb packaging | ✅ Shipped |
 
 ---
 
