@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SCD — Dashboard</title>
+<style>
+  :root { --bg: #0d1117; --surface: #161b22; --border: #30363d; --text: #e6edf3; --dim: #8b949e;
+          --red: #f85149; --orange: #d29922; --yellow: #e3b341; --green: #3fb950; --blue: #58a6ff;
+          --cyan: #39d2c0; --purple: #bc8cff; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', -apple-system, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+  .header { background: linear-gradient(135deg, #1a1e2e 0%, #0d1117 100%); border-bottom: 1px solid var(--border); padding: 1.2rem 2rem; display: flex; align-items: center; gap: 1rem; }
+  .header h1 { font-size: 1.4rem; font-weight: 700; }
+  .header h1 span { color: var(--cyan); }
+  .header .badge { background: var(--cyan); color: var(--bg); font-size: 0.7rem; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
+  .header .refresh-btn { margin-left: auto; background: var(--surface); border: 1px solid var(--border); color: var(--dim); padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; transition: 0.2s; }
+  .header .refresh-btn:hover { border-color: var(--cyan); color: var(--cyan); }
+  .container { max-width: 1400px; margin: 0 auto; padding: 1.5rem; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+  .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.2rem; transition: 0.3s; position: relative; overflow: hidden; }
+  .stat-card:hover { border-color: var(--cyan); transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,0.3); }
+  .stat-card .label { font-size: 0.8rem; color: var(--dim); text-transform: uppercase; letter-spacing: 0.05em; }
+  .stat-card .value { font-size: 2rem; font-weight: 700; margin: 0.3rem 0; }
+  .stat-card .sub { font-size: 0.75rem; color: var(--dim); }
+  .stat-card::after { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px; }
+  .stat-card.total::after { background: var(--cyan); }
+  .stat-card.critical::after { background: var(--red); }
+  .stat-card.critical .value { color: var(--red); }
+  .stat-card.high::after { background: var(--orange); }
+  .stat-card.high .value { color: var(--orange); }
+  .stat-card.clean::after { background: var(--green); }
+  .stat-card.clean .value { color: var(--green); }
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 1.5rem; }
+  .panel-header { padding: 1rem 1.2rem; border-bottom: 1px solid var(--border); font-weight: 600; font-size: 0.95rem; display: flex; align-items: center; gap: 0.5rem; }
+  .panel-body { padding: 0; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; padding: 0.7rem 1rem; font-size: 0.75rem; color: var(--dim); text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid var(--border); }
+  td { padding: 0.7rem 1rem; border-bottom: 1px solid var(--border); font-size: 0.85rem; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover { background: rgba(56, 139, 253, 0.04); }
+  .risk-badge { padding: 3px 10px; border-radius: 20px; font-size: 0.7rem; font-weight: 600; text-transform: uppercase; }
+  .risk-dangerous { background: rgba(248,81,73,0.15); color: var(--red); }
+  .risk-suspicious { background: rgba(210,153,34,0.15); color: var(--orange); }
+  .risk-clean { background: rgba(63,185,80,0.15); color: var(--green); }
+  .score-bar { width: 100px; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; display: inline-block; vertical-align: middle; margin-right: 6px; }
+  .score-fill { height: 100%; border-radius: 3px; transition: width 0.5s ease; }
+  .cmd-text { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.8rem; color: var(--purple); word-break: break-all; max-width: 500px; }
+  .empty-state { padding: 3rem; text-align: center; color: var(--dim); }
+  .empty-state .icon { font-size: 3rem; margin-bottom: 0.5rem; }
+  .pulse { animation: pulse 2s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+  .footer { text-align: center; padding: 2rem; color: var(--dim); font-size: 0.75rem; }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>🛡️ <span>SCD</span> Dashboard</h1>
+  <span class="badge">LIVE</span>
+  <button class="refresh-btn" onclick="fetchAlerts()">↻ Refresh</button>
+</div>
+<div class="container">
+  <div class="stats">
+    <div class="stat-card total"><div class="label">Total Alerts</div><div class="value" id="total">0</div><div class="sub">all time</div></div>
+    <div class="stat-card critical"><div class="label">Dangerous</div><div class="value" id="dangerous">0</div><div class="sub">score &gt; 50</div></div>
+    <div class="stat-card high"><div class="label">Suspicious</div><div class="value" id="suspicious">0</div><div class="sub">score 21-50</div></div>
+    <div class="stat-card clean"><div class="label">Max Score</div><div class="value" id="maxscore">0</div><div class="sub">out of 100</div></div>
+  </div>
+  <div class="panel">
+    <div class="panel-header">📋 Alert Feed <span class="pulse" style="color:var(--red)">●</span></div>
+    <div class="panel-body">
+      <table>
+        <thead><tr><th>Time</th><th>Command</th><th>Score</th><th>Level</th><th>Rules Matched</th></tr></thead>
+        <tbody id="alerts-body"><tr><td colspan="5"><div class="empty-state"><div class="icon">🔍</div>No alerts yet. Run a scan to populate.</div></td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+<div class="footer">SCD — Suspicious Command Detector v1.0.0 | Hunt. Score. Alert. Defend.</div>
+<script>
+async function fetchAlerts() {
+  try {
+    const res = await fetch('/api/alerts');
+    const alerts = await res.json();
+    renderAlerts(alerts);
+  } catch(e) { console.log('No alerts data available'); }
+}
+function renderAlerts(alerts) {
+  const tbody = document.getElementById('alerts-body');
+  if (!alerts.length) return;
+  let dangerous=0, suspicious=0, maxScore=0;
+  alerts.forEach(a => {
+    if (a.risk_score > 50) dangerous++;
+    else if (a.risk_score > 20) suspicious++;
+    if (a.risk_score > maxScore) maxScore = a.risk_score;
+  });
+  document.getElementById('total').textContent = alerts.length;
+  document.getElementById('dangerous').textContent = dangerous;
+  document.getElementById('suspicious').textContent = suspicious;
+  document.getElementById('maxscore').textContent = maxScore;
+  tbody.innerHTML = alerts.map(a => {
+    const cls = a.risk_score > 50 ? 'dangerous' : a.risk_score > 20 ? 'suspicious' : 'clean';
+    const color = a.risk_score > 50 ? '#f85149' : a.risk_score > 20 ? '#d29922' : '#3fb950';
+    const rules = (a.matched_rules||[]).map(r => r.rule_id||r.id||'').join(', ');
+    return `<tr>
+      <td style="white-space:nowrap">${a.timestamp||''}</td>
+      <td class="cmd-text">${escHtml(a.command||'')}</td>
+      <td><div class="score-bar"><div class="score-fill" style="width:${a.risk_score}%;background:${color}"></div></div>${a.risk_score}</td>
+      <td><span class="risk-badge risk-${cls}">${a.risk_level||cls}</span></td>
+      <td>${rules}</td>
+    </tr>`;
+  }).join('');
+}
+function escHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+fetchAlerts();
+setInterval(fetchAlerts, 5000);
+</script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+[Unit]
+Description=Suspicious Command Detector (SCD) daemon
+Documentation=https://github.com/Aryansin1234/Suspicious-Command-Detector
+After=network.target
+
+[Service]
+Type=forking
+PIDFile=/tmp/scd.pid
+ExecStart=/usr/bin/scd -d -f json -l /var/log/scd/alerts.json -r /etc/scd/rules.conf /var/log/auth.log
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadOnlyPaths=/var/log
+ReadWritePaths=/var/log/scd /tmp
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

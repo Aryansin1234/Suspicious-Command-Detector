@@ -105,6 +105,7 @@ typedef struct {
     RiskLevel   risk_level;
     char        pattern[MAX_PATTERN_LEN];
     char        description[MAX_DESC_LEN];
+    int         is_regex;       /* 1 if pattern uses POSIX regex */
 } Rule;
 
 /* Matched rule */
@@ -135,6 +136,14 @@ typedef struct {
     int         verbose;
     int         show_help;
     int         show_version;
+    /* v1.1 — advanced features */
+    char        webhook_url[MAX_PATH_LEN];
+    int         slack_mode;     /* 1 = Slack-formatted webhook */
+    int         web_server;     /* 1 = start web dashboard */
+    int         web_port;
+    char        alerts_path[MAX_PATH_LEN];
+    int         learn_mode;     /* 1 = baseline learning mode */
+    char        baseline_path[MAX_PATH_LEN];
 } Config;
 
 /* ── Utility function declarations (implemented in main.c) ─────── */

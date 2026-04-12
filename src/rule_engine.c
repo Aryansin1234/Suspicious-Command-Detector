@@ -2,13 +2,18 @@
  * rule_engine.c — Rule Loader & Pattern Matcher
  *
  * Loads detection rules from an external config file (rules.conf)
- * and performs case-insensitive substring matching of each rule
- * pattern against raw command strings.
+ * and performs case-insensitive substring matching (or POSIX regex
+ * matching for rules prefixed with "regex:") against raw commands.
  */
 
 #include "rule_engine.h"
 #include <ctype.h>
 #include <string.h>
+#include <regex.h>
+
+/* Compiled regex cache (indexed by rule position) */
+static regex_t compiled_re[MAX_RULES];
+static int     re_compiled[MAX_RULES];
 
 /* ── portable case-insensitive substring search ───────────────────── */
 
@@ -76,6 +81,7 @@ int rules_load(const char *path, Rule rules[], int *count)
         }
 
         Rule *r = &rules[*count];
+        memset(r, 0, sizeof(*r));
 
         /* ID */
         size_t id_len = (size_t)(sep1 - p);
@@ -93,7 +99,6 @@ int rules_load(const char *path, Rule rules[], int *count)
 
         /* PATTERN and DESCRIPTION */
         if (sep_last && sep_last != sep2) {
-            /* pattern may contain '|' */
             size_t pat_len = (size_t)(sep_last - sep2 - 1);
             if (pat_len >= MAX_PATTERN_LEN) pat_len = MAX_PATTERN_LEN - 1;
             memcpy(r->pattern, sep2 + 1, pat_len);
@@ -102,14 +107,21 @@ int rules_load(const char *path, Rule rules[], int *count)
             strncpy(r->description, trim(sep_last + 1), MAX_DESC_LEN - 1);
             r->description[MAX_DESC_LEN - 1] = '\0';
         } else {
-            /* no pipe in pattern — description is after 3rd '|' ... wait,
-               there are only 3 separators. */
-            /* Actually with 3 separators we have 4 fields: ID|RISK|PATTERN|DESC.
-               sep1=1st|, sep2=2nd|, sep_last=3rd|=last. If sep_last==sep2, we
-               have only 2 pipes which means 3 fields (malformed). Skip. */
-            /* Re-check: sep_last was set NULL above when sep_last==sep2.
-               So reaching here means we only had 2 pipes — malformed. */
             continue;
+        }
+
+        /* Check for regex: prefix */
+        if (strncmp(r->pattern, "regex:", 6) == 0) {
+            r->is_regex = 1;
+            memmove(r->pattern, r->pattern + 6, strlen(r->pattern + 6) + 1);
+            if (regcomp(&compiled_re[*count], r->pattern,
+                        REG_EXTENDED | REG_ICASE | REG_NOSUB) != 0) {
+                fprintf(stderr, "scd: invalid regex in rule %s: %s\n",
+                        r->id, r->pattern);
+                r->is_regex = 0;
+            } else {
+                re_compiled[*count] = 1;
+            }
         }
 
         (*count)++;
@@ -130,11 +142,29 @@ int rules_match(const Rule rules[], int rule_count,
         return 0;
 
     for (int i = 0; i < rule_count && *match_count < MAX_MATCHES; i++) {
-        const char *pos = scd_strcasestr(cmd->raw, rules[i].pattern);
-        if (pos) {
+        int matched = 0;
+        int mpos = 0;
+
+        if (rules[i].is_regex && re_compiled[i]) {
+            /* POSIX regex match */
+            regmatch_t rm;
+            if (regexec(&compiled_re[i], cmd->raw, 1, &rm, 0) == 0) {
+                matched = 1;
+                mpos = (int)rm.rm_so;
+            }
+        } else {
+            /* Substring match */
+            const char *pos = scd_strcasestr(cmd->raw, rules[i].pattern);
+            if (pos) {
+                matched = 1;
+                mpos = (int)(pos - cmd->raw);
+            }
+        }
+
+        if (matched) {
             MatchedRule *m = &matches[*match_count];
-            m->rule     = rules[i];   /* struct copy */
-            m->position = (int)(pos - cmd->raw);
+            m->rule     = rules[i];
+            m->position = mpos;
             (*match_count)++;
         }
     }
