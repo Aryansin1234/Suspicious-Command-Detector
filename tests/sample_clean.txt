@@ -1,0 +1,48 @@
+ls -la
+cd /home
+pwd
+cat /etc/hostname
+mkdir -p /tmp/testdir
+cp file1.txt file2.txt
+mv old.txt new.txt
+grep "hello" file.txt
+find . -name "*.c"
+echo "Hello World"
+whoami
+date
+uptime
+df -h
+du -sh /tmp
+free -m
+top -bn1
+ps aux
+id
+uname -a
+hostname
+ifconfig
+ip addr show
+ping -c 3 google.com
+traceroute google.com
+dig google.com
+nslookup example.com
+ssh user@server
+scp file.txt user@server:/tmp/
+rsync -avz src/ dest/
+tar -czf archive.tar.gz dir/
+unzip file.zip
+gzip file.txt
+gunzip file.txt.gz
+head -n 20 file.txt
+tail -f /var/log/messages
+wc -l file.txt
+sort file.txt
+uniq -c sorted.txt
+awk '{print $1}' file.txt
+sed 's/old/new/g' file.txt
+cut -d: -f1 /etc/passwd
+diff file1.txt file2.txt
+file /usr/bin/ls
+which python3
+env
+export PATH=$PATH:/usr/local/bin
+alias ll='ls -la'

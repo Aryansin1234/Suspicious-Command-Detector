@@ -1,0 +1,27 @@
+version: "3.9"
+
+services:
+
+  # One-shot scan of a history file
+  scd-scan:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: scd-scan
+    volumes:
+      - ${HOME}/.bash_history:/data/bash_history:ro
+      - ../config:/app/config:ro
+    command: ["-f", "json", "-r", "/app/config/rules.conf", "/data/bash_history"]
+
+  # Daemon mode: continuously watch a log file
+  scd-daemon:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: scd-daemon
+    restart: unless-stopped
+    volumes:
+      - /var/log:/var/log:ro
+      - ../config:/app/config:ro
+      - ./logs:/app/logs
+    command: ["-d", "-l", "/app/logs/scd.log", "-r", "/app/config/rules.conf", "/var/log/syslog"]
