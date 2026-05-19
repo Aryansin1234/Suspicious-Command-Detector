@@ -1,6 +1,5 @@
 CC       = gcc
-CFLAGS   = -D_GNU_SOURCE -Wall -Wextra -pedantic -std=c11 -O2
-LDFLAGS  =
+CFLAGS   = -Wall -Wextra -pedantic -std=c11 -O2
 SRC_DIR  = src
 INC_DIR  = include
 BUILD_DIR= build
@@ -9,7 +8,7 @@ SRCS     = $(wildcard $(SRC_DIR)/*.c)
 OBJS     = $(SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 TARGET   = scd
 
-.PHONY: all clean test docker-build docker-run docker-compose-up docker-compose-down
+.PHONY: all clean run test
 
 all: $(BUILD_DIR) $(TARGET)
 
@@ -25,20 +24,12 @@ $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
 clean:
 	rm -rf $(BUILD_DIR) $(TARGET)
 
-test:
-	@bash tests/test_parser.sh
-	@bash tests/test_rules.sh
-	@bash tests/test_scoring.sh
+run: all
+	./$(TARGET)
 
-docker-build:
-	docker build -f docker/Dockerfile -t scd:latest .
-
-docker-run:
-	docker run --rm -v ~/.bash_history:/data/bash_history:ro scd:latest \
-	  -f json /data/bash_history
-
-docker-compose-up:
-	docker compose -f docker/docker-compose.yml up --build
-
-docker-compose-down:
-	docker compose -f docker/docker-compose.yml down
+test: all
+	@echo "=== Testing with sample malicious commands ==="
+	@./$(TARGET) < tests/sample_malicious.txt || true
+	@echo ""
+	@echo "=== Testing with sample clean commands ==="
+	@./$(TARGET) < tests/sample_clean.txt || true

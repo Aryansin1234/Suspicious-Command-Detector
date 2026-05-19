@@ -4,9 +4,9 @@
 #include "scd.h"
 
 /*
- * Tokenize a raw command line into a ParsedCommand struct.
- * Handles pipes, redirects, subshells, quotes, and escapes.
- * Returns token count on success, -1 on error, 0 for empty/comment lines.
+ * Parse a shell command line into a ParsedCommand struct.
+ * Handles pipes, redirects, subshells, quotes, escapes.
+ * Returns token count (>0) on success, 0 for empty/comment, -1 on error.
  */
 int parse_command(const char *line, ParsedCommand *cmd);
 

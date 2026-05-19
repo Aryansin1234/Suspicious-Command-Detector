@@ -1,26 +1,25 @@
 /*
- * main.c — Entry point, argument parsing, mode dispatch
+ * main.c — SCD Entry Point (Simple Interactive Shell)
  *
- * Suspicious Command Detector (SCD) v1.0.0
- * Usage: scd [OPTIONS] [FILE]
+ * Usage: ./scd [rules_file]
+ *
+ * Launches the SCD Guard Shell which intercepts commands,
+ * analyzes them, and warns before executing suspicious ones.
  */
 
 #include "scd.h"
 #include "parser.h"
 #include "rule_engine.h"
 #include "scorer.h"
-#include "alert.h"
-#include "input_reader.h"
-#include "daemon.h"
-#include "webhook.h"
-#include "baseline.h"
-#include "web_server.h"
 
 #include <unistd.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/wait.h>
+#include <signal.h>
+#include <errno.h>
 
-/* ── utility function implementations ─────────────────────────────── */
+/* ── Utility functions ────────────────────────────────────────────── */
 
 const char *risk_level_to_str(RiskLevel level)
 {
@@ -53,301 +52,329 @@ int risk_level_score(RiskLevel level)
     }
 }
 
-/* ── usage / version ──────────────────────────────────────────────── */
+/* ── ANSI Colors ──────────────────────────────────────────────────── */
 
-static void print_usage(const char *prog)
+#define C_RESET   "\033[0m"
+#define C_BOLD    "\033[1m"
+#define C_DIM     "\033[2m"
+#define C_RED     "\033[1;31m"
+#define C_ORANGE  "\033[38;5;208m"
+#define C_YELLOW  "\033[1;33m"
+#define C_GREEN   "\033[1;32m"
+#define C_CYAN    "\033[1;36m"
+#define C_BLUE    "\033[1;34m"
+
+/* ── Session stats ────────────────────────────────────────────────── */
+
+typedef struct {
+    int total;
+    int clean;
+    int blocked;
+    int allowed_risky;
+} Stats;
+
+static Stats g_stats;
+
+/* ── Banner ───────────────────────────────────────────────────────── */
+
+static void print_banner(int rule_count)
 {
     fprintf(stderr,
-        "Suspicious Command Detector (SCD) v%s\n\n"
-        "Usage: %s [OPTIONS] [FILE]\n\n"
-        "Arguments:\n"
-        "  FILE                  Path to history/log file (omit for stdin)\n\n"
-        "Basic Options:\n"
-        "  -f <format>           Output format: text (default) | json\n"
-        "  -r <rules>            Path to rules config (default: ./config/rules.conf)\n"
-        "  -w <whitelist>        Path to whitelist file\n"
-        "  -l <logfile>          Write alerts to logfile instead of stdout\n"
-        "  -d                    Run as daemon (watch FILE via inotify)\n"
-        "  -v                    Verbose: show all scanned commands\n"
-        "  -t <threshold>        Minimum risk score to report (default: %d)\n"
-        "  -h                    Show this help\n"
-        "  --version             Show version\n\n"
-        "Advanced Options:\n"
-        "  --webhook <url>       Send alerts to a webhook URL (via HTTP POST)\n"
-        "  --slack <url>         Send alerts to Slack webhook (formatted)\n"
-        "  --web <port>          Start web dashboard on given port\n"
-        "  --alerts <file>       JSON alerts file for web dashboard\n"
-        "  --learn <output>      Learn baseline from FILE, save to <output>\n"
-        "  --baseline <file>     Load baseline for anomaly scoring\n",
-        SCD_VERSION, prog, THRESH_CLEAN);
+        "\n"
+        C_CYAN "╔══════════════════════════════════════════════════════════╗\n"
+        "║                                                          ║\n"
+        "║   " C_RED "⚡" C_CYAN " " C_BOLD "Suspicious Command Detector (SCD)" C_RESET C_CYAN "                    ║\n"
+        "║   " C_DIM "Interactive Guard Shell — System Programming Project" C_RESET C_CYAN "   ║\n"
+        "║                                                          ║\n"
+        "╠══════════════════════════════════════════════════════════╣\n"
+        "║                                                          ║\n"
+        "║" C_RESET "  Type any shell command and SCD will:" C_CYAN "                    ║\n"
+        "║  " C_GREEN "✓" C_CYAN " Parse and tokenize the command (pipes, redirects...)  ║\n"
+        "║  " C_GREEN "✓" C_CYAN " Match against %3d detection rules (regex + substring) ║\n"
+        "║  " C_GREEN "✓" C_CYAN " Calculate a risk score (0-100)                        ║\n"
+        "║  " C_GREEN "✓" C_CYAN " Warn with reasons if suspicious/dangerous             ║\n"
+        "║  " C_GREEN "✓" C_CYAN " Execute via fork()/exec() if approved                 ║\n"
+        "║                                                          ║\n"
+        "║" C_RESET "  Commands: " C_GREEN "help" C_RESET " | " C_GREEN "stats" C_RESET " | " C_GREEN "exit" C_CYAN "                             ║\n"
+        "║                                                          ║\n"
+        "╚══════════════════════════════════════════════════════════╝" C_RESET "\n\n",
+        rule_count);
 }
 
-/* ── parse long options from argv ─────────────────────────────────── */
+/* ── Warning display ──────────────────────────────────────────────── */
 
-static int parse_long_opts(int argc, char *argv[], Config *cfg)
+static void print_warning(const MatchedRule matches[], int mc,
+                          int score, const char *cmd)
 {
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--version") == 0) {
-            cfg->show_version = 1;
-            argv[i] = (char *)"";   /* consumed */
-        } else if (strcmp(argv[i], "--help") == 0) {
-            cfg->show_help = 1;
-            argv[i] = (char *)"";
-        } else if (strcmp(argv[i], "--webhook") == 0 && i + 1 < argc) {
-            strncpy(cfg->webhook_url, argv[i + 1], MAX_PATH_LEN - 1);
-            argv[i] = argv[i + 1] = (char *)"";
-            i++;
-        } else if (strcmp(argv[i], "--slack") == 0 && i + 1 < argc) {
-            strncpy(cfg->webhook_url, argv[i + 1], MAX_PATH_LEN - 1);
-            cfg->slack_mode = 1;
-            argv[i] = argv[i + 1] = (char *)"";
-            i++;
-        } else if (strcmp(argv[i], "--web") == 0 && i + 1 < argc) {
-            cfg->web_server = 1;
-            cfg->web_port = atoi(argv[i + 1]);
-            if (cfg->web_port <= 0) cfg->web_port = WEB_DEFAULT_PORT;
-            argv[i] = argv[i + 1] = (char *)"";
-            i++;
-        } else if (strcmp(argv[i], "--alerts") == 0 && i + 1 < argc) {
-            strncpy(cfg->alerts_path, argv[i + 1], MAX_PATH_LEN - 1);
-            argv[i] = argv[i + 1] = (char *)"";
-            i++;
-        } else if (strcmp(argv[i], "--learn") == 0 && i + 1 < argc) {
-            cfg->learn_mode = 1;
-            strncpy(cfg->baseline_path, argv[i + 1], MAX_PATH_LEN - 1);
-            argv[i] = argv[i + 1] = (char *)"";
-            i++;
-        } else if (strcmp(argv[i], "--baseline") == 0 && i + 1 < argc) {
-            strncpy(cfg->baseline_path, argv[i + 1], MAX_PATH_LEN - 1);
-            argv[i] = argv[i + 1] = (char *)"";
-            i++;
+    const char *color = (score > THRESH_DANGER) ? C_RED : C_YELLOW;
+    const char *label = (score > THRESH_DANGER) ? "DANGEROUS" : "SUSPICIOUS";
+
+    int bar_len = 20;
+    int filled  = (score * bar_len) / 100;
+
+    fprintf(stderr, "\n%s", color);
+    for (int i = 0; i < 60; i++) fputc('-', stderr);
+    fprintf(stderr, C_RESET "\n");
+
+    fprintf(stderr, "  %s⚠  %s%s" C_RESET "  (Score: %s%d/100" C_RESET ")\n",
+            color, C_BOLD, label, color, score);
+
+    /* Risk bar */
+    fprintf(stderr, "  Risk: [%s", color);
+    for (int i = 0; i < bar_len; i++)
+        fputc(i < filled ? '#' : '-', stderr);
+    fprintf(stderr, C_RESET "] %s%d%%" C_RESET "\n", color, score);
+
+    fprintf(stderr, "%s", color);
+    for (int i = 0; i < 60; i++) fputc('-', stderr);
+    fprintf(stderr, C_RESET "\n");
+
+    fprintf(stderr, "  " C_BOLD "Command:" C_RESET " %s\n", cmd);
+    fprintf(stderr, "  " C_BOLD "Reasons:" C_RESET "\n");
+
+    for (int i = 0; i < mc; i++) {
+        const Rule *r = &matches[i].rule;
+        const char *rc;
+        switch (r->risk_level) {
+        case RISK_CRITICAL: rc = C_RED;    break;
+        case RISK_HIGH:     rc = C_ORANGE; break;
+        case RISK_MEDIUM:   rc = C_YELLOW; break;
+        default:            rc = C_DIM;    break;
         }
+        fprintf(stderr, "    %s[%s] %-8s" C_RESET " → %s\n",
+                rc, r->id, risk_level_to_str(r->risk_level), r->description);
     }
-    return 0;
+
+    fprintf(stderr, "%s", color);
+    for (int i = 0; i < 60; i++) fputc('-', stderr);
+    fprintf(stderr, C_RESET "\n\n");
 }
 
-/* ── CLI argument parsing ─────────────────────────────────────────── */
+/* ── Command execution via fork/exec/wait (IPC with pipe) ─────────── */
 
-static int parse_args(int argc, char *argv[], Config *cfg)
+static int execute_command(const char *cmd_str)
 {
-    memset(cfg, 0, sizeof(*cfg));
-    cfg->threshold = THRESH_CLEAN;
-    cfg->web_port  = WEB_DEFAULT_PORT;
-    strncpy(cfg->rules_path, "./config/rules.conf", MAX_PATH_LEN - 1);
+    int pipefd[2];
+    if (pipe(pipefd) < 0) { perror("scd: pipe"); return -1; }
 
-    /* long opts first (consumed from argv) */
-    parse_long_opts(argc, argv, cfg);
-    if (cfg->show_version || cfg->show_help)
-        return 0;
-
-    /* reset getopt */
-    optind = 1;
-    int opt;
-    while ((opt = getopt(argc, argv, "f:r:w:l:dvt:h")) != -1) {
-        switch (opt) {
-        case 'f':
-            if (!optarg) break;
-            if (strcmp(optarg, "json") == 0)      cfg->format = FORMAT_JSON;
-            else if (strcmp(optarg, "text") == 0)  cfg->format = FORMAT_TEXT;
-            else { fprintf(stderr, "scd: unknown format '%s'\n", optarg); return -1; }
-            break;
-        case 'r': strncpy(cfg->rules_path,    optarg, MAX_PATH_LEN - 1); break;
-        case 'w': strncpy(cfg->whitelist_path, optarg, MAX_PATH_LEN - 1); break;
-        case 'l': strncpy(cfg->log_path,       optarg, MAX_PATH_LEN - 1); break;
-        case 'd': cfg->daemon_mode = 1; break;
-        case 'v': cfg->verbose     = 1; break;
-        case 't': cfg->threshold   = atoi(optarg); break;
-        case 'h': cfg->show_help   = 1; return 0;
-        default:  break;
-        }
+    pid_t pid = fork();
+    if (pid < 0) {
+        perror("scd: fork");
+        close(pipefd[0]); close(pipefd[1]);
+        return -1;
     }
 
-    /* remaining non-empty arg is the input file */
-    for (int i = optind; i < argc; i++) {
-        if (argv[i][0] != '\0') {
-            strncpy(cfg->input_path, argv[i], MAX_PATH_LEN - 1);
-            break;
-        }
+    if (pid == 0) {
+        /* CHILD: close read end, notify parent, exec */
+        close(pipefd[0]);
+        char msg[512];
+        int len = snprintf(msg, sizeof(msg), "[scd] PID %d executing: %s\n",
+                           (int)getpid(), cmd_str);
+        if (len > 0) write(pipefd[1], msg, (size_t)len);
+        close(pipefd[1]);
+
+        /* exec replaces process image; SIGINT resets to default */
+        char *const argv[] = { "/bin/sh", "-c", (char *)cmd_str, NULL };
+        execvp("/bin/sh", argv);
+        perror("scd: exec");
+        _exit(EXIT_FAILURE);
     }
 
-    return 0;
+    /* PARENT: read IPC message, wait for child */
+    close(pipefd[1]);
+    char ipc_buf[512];
+    read(pipefd[0], ipc_buf, sizeof(ipc_buf) - 1);
+    close(pipefd[0]);
+
+    int status = 0;
+    waitpid(pid, &status, 0);
+    if (WIFEXITED(status))   return WEXITSTATUS(status);
+    if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+    return -1;
 }
 
-/* ── main ─────────────────────────────────────────────────────────── */
+/* ── Built-in commands ────────────────────────────────────────────── */
+
+static void print_help(void)
+{
+    fprintf(stderr,
+        "\n" C_CYAN C_BOLD "  Built-in Commands:" C_RESET "\n"
+        "  ─────────────────────────────────────────\n"
+        "  " C_GREEN "help" C_RESET "       Show this help message\n"
+        "  " C_GREEN "stats" C_RESET "      Show session statistics\n"
+        "  " C_GREEN "exit" C_RESET "       Exit SCD Guard Shell\n"
+        "  ─────────────────────────────────────────\n"
+        "  Any other input is treated as a shell command.\n"
+        "  Risky commands will be flagged with reasons.\n\n");
+}
+
+static void print_stats(void)
+{
+    fprintf(stderr,
+        "\n" C_CYAN C_BOLD "  Session Statistics:" C_RESET "\n"
+        "  ─────────────────────────────────────────\n"
+        "  Commands analyzed : " C_BOLD "%d" C_RESET "\n"
+        "  " C_GREEN "Clean" C_RESET "             : %d\n"
+        "  " C_YELLOW "Risky (allowed)" C_RESET "   : %d\n"
+        "  " C_RED "Blocked" C_RESET "           : %d\n"
+        "  ─────────────────────────────────────────\n\n",
+        g_stats.total, g_stats.clean, g_stats.allowed_risky, g_stats.blocked);
+}
+
+/* ── Prompt ───────────────────────────────────────────────────────── */
+
+static void print_prompt(void)
+{
+    char cwd[256];
+    if (getcwd(cwd, sizeof(cwd)) == NULL)
+        strcpy(cwd, "?");
+    else {
+        const char *home = getenv("HOME");
+        if (home && home[0] && strncmp(cwd, home, strlen(home)) == 0) {
+            char tmp[256];
+            snprintf(tmp, sizeof(tmp), "~%s", cwd + strlen(home));
+            strncpy(cwd, tmp, sizeof(cwd) - 1);
+            cwd[255] = '\0';
+        }
+    }
+    const char *user = getenv("USER");
+    if (!user) user = "user";
+
+    fprintf(stderr, C_GREEN "%s" C_RESET "@" C_CYAN "scd" C_RESET
+            ":" C_BLUE "%s" C_RESET " " C_RED "$" C_RESET " ", user, cwd);
+    fflush(stderr);
+}
+
+/* ── Main ─────────────────────────────────────────────────────────── */
 
 int main(int argc, char *argv[])
 {
-    Config cfg;
-    if (parse_args(argc, argv, &cfg) < 0) {
-        print_usage(argv[0]);
-        return EXIT_ERROR;
-    }
-    if (cfg.show_version) {
-        printf("scd version %s\n", SCD_VERSION);
-        return EXIT_CLEAN;
-    }
-    if (cfg.show_help) {
-        print_usage(argv[0]);
-        return EXIT_CLEAN;
-    }
+    /* Determine rules path */
+    const char *rules_path = "./config/rules.conf";
+    if (argc > 1) rules_path = argv[1];
 
-    /* ── Web dashboard mode ──────────────────────────────────────── */
-    if (cfg.web_server) {
-        const char *alerts = cfg.alerts_path[0] ? cfg.alerts_path : "alerts.json";
-        const char *html   = "./web/dashboard.html";
-        return web_server_start(cfg.web_port, alerts, html);
-    }
-
-    /* ── Baseline learning mode ──────────────────────────────────── */
-    if (cfg.learn_mode) {
-        if (!cfg.input_path[0]) {
-            fprintf(stderr, "scd: --learn requires a FILE argument\n");
-            return EXIT_ERROR;
-        }
-        return baseline_learn(cfg.input_path, cfg.baseline_path) < 0
-               ? EXIT_ERROR : EXIT_CLEAN;
-    }
-
-    /* ── Load rules ──────────────────────────────────────────────── */
+    /* Load rules */
     Rule rules[MAX_RULES];
     int  rule_count = 0;
-    if (rules_load(cfg.rules_path, rules, &rule_count) < 0)
-        return EXIT_ERROR;
+    if (rules_load(rules_path, rules, &rule_count) < 0) {
+        fprintf(stderr, "scd: failed to load rules from %s\n", rules_path);
+        return 1;
+    }
     if (rule_count == 0) {
-        fprintf(stderr, "scd: no rules loaded from %s\n", cfg.rules_path);
-        return EXIT_ERROR;
+        fprintf(stderr, "scd: no rules loaded from %s\n", rules_path);
+        return 1;
     }
 
-    /* ── Load whitelist (optional) ───────────────────────────────── */
+    /* Load whitelist (optional) */
     char wl[MAX_WHITELIST][MAX_PATTERN_LEN];
     int  wl_count = 0;
-    if (cfg.whitelist_path[0])
-        whitelist_load(cfg.whitelist_path, wl, &wl_count);
+    whitelist_load("./config/whitelist.conf", wl, &wl_count);
 
-    /* ── Load baseline (optional) ────────────────────────────────── */
-    Baseline bl;
-    int have_baseline = 0;
-    if (cfg.baseline_path[0] && !cfg.learn_mode) {
-        if (baseline_load(cfg.baseline_path, &bl) == 0)
-            have_baseline = 1;
-    }
+    /* Ignore SIGINT in the monitor (child resets via exec) */
+    signal(SIGINT, SIG_IGN);
 
-    /* ── Daemon mode ─────────────────────────────────────────────── */
-    if (cfg.daemon_mode) {
-        if (!cfg.input_path[0]) {
-            fprintf(stderr, "scd: daemon mode requires a FILE argument\n");
-            return EXIT_ERROR;
-        }
-        return daemon_start(&cfg, rules, rule_count,
-                            (const char (*)[MAX_PATTERN_LEN])wl, wl_count);
-    }
+    /* Print banner */
+    print_banner(rule_count);
 
-    /* ── Scanner mode ────────────────────────────────────────────── */
-    InputReader reader;
-    if (input_open(&reader, cfg.input_path[0] ? cfg.input_path : NULL) < 0)
-        return EXIT_ERROR;
-
-    FILE *out = stdout;
-    if (cfg.log_path[0]) {
-        out = fopen(cfg.log_path, "a");
-        if (!out) {
-            perror("scd: cannot open log file");
-            input_close(&reader);
-            return EXIT_ERROR;
-        }
-    }
-
-    int max_score   = 0;
-    int line_count  = 0;
-    int alert_count = 0;
+    /* Main loop */
     char line[MAX_CMD_LEN];
+    memset(&g_stats, 0, sizeof(g_stats));
 
-    while (input_readline(&reader, line, sizeof(line)) > 0) {
-        ParsedCommand cmd;
-        int tc = parse_command(line, &cmd);
-        if (tc <= 0)
-            continue;
+    for (;;) {
+        print_prompt();
 
-        line_count++;
+        if (!fgets(line, sizeof(line), stdin))
+            break;  /* EOF / Ctrl-D */
 
-        /* whitelist check */
-        if (wl_count > 0 && whitelist_check((const char (*)[MAX_PATTERN_LEN])wl,
-                                             wl_count, cmd.raw))
-        {
-            if (cfg.verbose)
-                fprintf(out, "[SKIP-WL] %s\n", cmd.raw);
+        line[strcspn(line, "\r\n")] = '\0';
+        if (line[0] == '\0') continue;
+
+        /* Built-ins */
+        if (strcmp(line, "exit") == 0 || strcmp(line, "quit") == 0) break;
+        if (strcmp(line, "help")  == 0) { print_help();  continue; }
+        if (strcmp(line, "stats") == 0) { print_stats(); continue; }
+        if (strcmp(line, "clear") == 0) { execute_command("clear"); continue; }
+
+        /* cd must be handled in parent process */
+        if (strncmp(line, "cd", 2) == 0 &&
+            (line[2] == '\0' || line[2] == ' ')) {
+            const char *dir = (line[2] == ' ' && line[3] != '\0')
+                              ? line + 3 : getenv("HOME");
+            if (!dir) dir = "/";
+            if (chdir(dir) != 0)
+                fprintf(stderr, "scd: cd: %s: %s\n", dir, strerror(errno));
             continue;
         }
 
-        /* match rules */
+        g_stats.total++;
+
+        /* Whitelist check */
+        if (wl_count > 0 &&
+            whitelist_check((const char (*)[MAX_PATTERN_LEN])wl, wl_count, line)) {
+            g_stats.clean++;
+            fprintf(stderr, "  " C_GREEN "✓ Clean" C_RESET " (whitelisted)\n");
+            execute_command(line);
+            continue;
+        }
+
+        /* Parse command */
+        ParsedCommand pcmd;
+        if (parse_command(line, &pcmd) <= 0) {
+            g_stats.clean++;
+            execute_command(line);
+            continue;
+        }
+
+        /* Match against rules */
         MatchedRule matches[MAX_MATCHES];
         int mc = 0;
-        rules_match(rules, rule_count, &cmd, matches, &mc);
+        rules_match(rules, rule_count, &pcmd, matches, &mc);
+        int score = (mc > 0) ? score_calculate(matches, mc) : 0;
 
-        /* baseline anomaly check (if loaded) */
-        if (have_baseline && mc == 0) {
-            float anomaly = baseline_anomaly_score(&bl, cmd.raw);
-            if (anomaly >= 0.7f) {
-                if (cfg.verbose)
-                    fprintf(out, "[ANOMALY] %.0f%% — %s\n", anomaly * 100, cmd.raw);
-            }
-        }
-
-        if (mc == 0) {
-            if (cfg.verbose)
-                fprintf(out, "[CLEAN  ] %s\n", cmd.raw);
+        /* Clean command — just run it */
+        if (score < THRESH_CLEAN || mc == 0) {
+            g_stats.clean++;
+            fprintf(stderr, "  " C_GREEN "✓ Clean" C_RESET " (score: %d)\n", score);
+            execute_command(line);
             continue;
         }
 
-        int score = score_calculate(matches, mc);
-        if (score > max_score)
-            max_score = score;
+        /* Suspicious/Dangerous — warn and ask */
+        print_warning(matches, mc, score, line);
 
-        if (score < cfg.threshold) {
-            if (cfg.verbose)
-                fprintf(out, "[BELOW-%d] %s (score=%d)\n",
-                        cfg.threshold, cmd.raw, score);
+        const char *yn_prompt = (score > THRESH_DANGER)
+            ? C_RED "  Run this DANGEROUS command? [y/N]: " C_RESET
+            : C_YELLOW "  Run this suspicious command? [y/N]: " C_RESET;
+        fprintf(stderr, "%s", yn_prompt);
+        fflush(stderr);
+
+        char confirm[32] = {0};
+        if (!fgets(confirm, sizeof(confirm), stdin)) {
+            fprintf(stderr, "\n" C_RED "  ✗ Aborted." C_RESET "\n\n");
+            g_stats.blocked++;
             continue;
         }
+        confirm[strcspn(confirm, "\r\n")] = '\0';
 
-        alert_count++;
-        Alert alert;
-        alert_init(&alert, cmd.raw, matches, mc, score);
-
-        if (cfg.format == FORMAT_JSON)
-            alert_print_json(out, &alert);
-        else
-            alert_print_text(out, &alert);
-
-        /* Send to webhook if configured */
-        if (cfg.webhook_url[0]) {
-            if (cfg.slack_mode)
-                webhook_send_slack(cfg.webhook_url, &alert);
-            else
-                webhook_send(cfg.webhook_url, &alert);
+        if (confirm[0] == 'y' || confirm[0] == 'Y') {
+            g_stats.allowed_risky++;
+            fprintf(stderr, "  " C_GREEN "Running..." C_RESET "\n");
+            execute_command(line);
+        } else {
+            g_stats.blocked++;
+            fprintf(stderr, "  " C_RED "✗ Command blocked by SCD." C_RESET "\n\n");
         }
     }
 
-    /* summary (text mode only) */
-    if (cfg.format == FORMAT_TEXT) {
-        fprintf(out, "\n── SCD Scan Summary ────────────────────────\n");
-        fprintf(out, " Rules loaded : %d\n", rule_count);
-        fprintf(out, " Lines scanned: %d\n", line_count);
-        fprintf(out, " Alerts raised: %d\n", alert_count);
-        fprintf(out, " Max score    : %d (%s)\n", max_score, score_label(max_score));
-        if (have_baseline)
-            fprintf(out, " Baseline     : loaded (%d patterns)\n", bl.entry_count);
-        fprintf(out, "────────────────────────────────────────────\n");
-    }
+    /* Exit summary */
+    fprintf(stderr,
+        "\n" C_CYAN "════════════════════════════════════════" C_RESET "\n"
+        "  " C_BOLD "SCD Session Summary" C_RESET "\n"
+        "  Commands: %d | " C_GREEN "Clean: %d" C_RESET
+        " | " C_YELLOW "Risky: %d" C_RESET
+        " | " C_RED "Blocked: %d" C_RESET "\n"
+        C_CYAN "════════════════════════════════════════" C_RESET "\n\n",
+        g_stats.total, g_stats.clean, g_stats.allowed_risky, g_stats.blocked);
 
-    if (out != stdout)
-        fclose(out);
-    input_close(&reader);
-
-    /* exit code per contract */
-    if (max_score > THRESH_DANGER)
-        return EXIT_DANGEROUS;
-    if (max_score > THRESH_CLEAN)
-        return EXIT_SUSPICIOUS;
-    return EXIT_CLEAN;
+    return 0;
 }
